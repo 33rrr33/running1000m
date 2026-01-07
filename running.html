@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <!-- 本物のアプリのように見せる設定 (PWA) -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>1000m走マネージャー</title>
+    
+    <!-- スタイル & スクリプト -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Firebase -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&family=Roboto+Mono:wght@700&display=swap');
+        body { 
+            font-family: 'Noto Sans JP', sans-serif; 
+            touch-action: manipulation; 
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        .font-mono { font-family: 'Roboto Mono', monospace; }
+        /* 横向き対応のレイアウト */
+        @media (min-width: 1024px) {
+            .measure-container { display: grid; grid-template-columns: 1fr 2fr; gap: 2rem; align-items: start; }
+        }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- アイコン (SVG直接埋め込みでエラーを防止) ---
+        const Icon = ({ d, size = 24, className = "" }) => (
+            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                <path d={d} />
+            </svg>
+        );
+
+        const Icons = {
+            Left: (p) => <Icon d="m15 18-6-6 6-6" {...p} />,
+            Right: (p) => <Icon d="m9 18 6-6-6-6" {...p} />,
+            Reset: (p) => <Icon d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5" {...p} />,
+            Save: (p) => <Icon d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8" {...p} />,
+            X: (p) => <Icon d="M18 6 6 18M6 6l12 12" {...p} />,
+            Target: (p) => <Icon d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" {...p} />,
+            ArrowRight: (p) => <Icon d="M5 12h14M12 5l7 7-7 7" {...p} />,
+            List: (p) => <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" {...p} />,
+            Settings: (p) => <Icon d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" {...p} />,
+            History: (p) => <Icon d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M12 7v5l3 2" {...p} />,
+            Trend: (p) => <Icon d="m22 7-8.5 8.5-5-5L2 17" {...p} />
+        };
+
+        // --- Firebase 設定 ---
+        const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
+        const appId = window.__app_id || 'running-tracker-v17';
+
+        if (firebaseConfig.apiKey && !firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+        const auth = firebase.auth ? firebase.auth() : null;
+        const db = firebase.firestore ? firebase.firestore() : null;
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [hasLoaded, setHasLoaded] = useState(false);
+            const [sessions, setSessions] = useState(Array(15).fill(null).map((_, i) => ({
+                id: i,
+                studentInfo: { grade: '1', class: '1', number: '1', name: '' },
+                baseTotalSec: 354,
+                referenceLaps: [51, 51, 51, 51, 50, 50, 50],
+                lapTargets: [51, 51, 51, 51, 50, 50, 50],
+                laps: Array(7).fill(null),
+                totalTime: 0,
+                isSaved: false,
+                isLocked: false,
+                step: 'info',
+            })));
+
+            const [currentIdx, setCurrentIdx] = useState(0);
+            const [isRunning, setIsRunning] = useState(false);
+            const [elapsedTime, setElapsedTime] = useState(0);
+            const [startTime, setStartTime] = useState(null);
+            const [showSaveModal, setShowSaveModal] = useState(false);
+            const [showResetModal, setShowResetModal] = useState(false);
+            const [inputMins, setInputMins] = useState(5);
+            const [inputSecs, setInputSecs] = useState(54);
+
+            const timerRef = useRef(null);
+            const currentSession = sessions[currentIdx];
+
+            // 1. ログイン & データ復元
+            useEffect(() => {
+                if (!auth) { setHasLoaded(true); return; }
+                const token = window.__initial_auth_token;
+                const signPromise = token ? auth.signInWithCustomToken(token) : auth.signInAnonymously();
+                signPromise.catch(console.error);
+                return auth.onAuthStateChanged(setUser);
+            }, []);
+
+            useEffect(() => {
+                if (!user || !db) return;
+                const sessionDoc = db.doc(`artifacts/${appId}/public/data/app_state/sessions_v1`);
+                const unsubscribe = sessionDoc.onSnapshot((snapshot) => {
+                    if (snapshot.exists) { 
+                        const data = snapshot.data();
+                        if (data && data.sessions) setSessions(data.sessions);
+                    }
+                    setHasLoaded(true);
+                }, (err) => { console.error(err); setHasLoaded(true); });
+                return () => unsubscribe();
+            }, [user]);
+
+            const syncToCloud = async (newSessions) => {
+                if (!user || !db || !hasLoaded) return;
+                try {
+                    await db.doc(`artifacts/${appId}/public/data/app_state/sessions_v1`).set({
+                        sessions: newSessions, lastUpdated: Date.now()
+                    }, { merge: true });
+                } catch (e) { console.error(e); }
+            };
+
+            // 時間の表示形式 (分:秒)
+            const formatTime = (seconds) => {
+                const mins = Math.floor(seconds / 60);
+                const secs = Math.floor(seconds % 60);
+                return `${mins}:${secs.toString().padStart(2, '0')}`;
+            };
+
+            const calculateTotalDiff = () => {
+                return currentSession.referenceLaps.reduce((acc, ref, idx) => acc + (ref - currentSession.lapTargets[idx]), 0);
+            };
+
+            const getEvaluation = (diff) => {
+                if (diff === null) return { color: 'slate', tw: 'bg-slate-400', hex: '#cbd5e1' };
+                const absDiff = Math.abs(diff);
+                if (absDiff <= 2) return { color: 'emerald', tw: 'bg-emerald-500', hex: '#10b981', label: 'ぴったり' };
+                if (absDiff <= 5) return { color: 'amber', tw: 'bg-amber-400', hex: '#f59e0b', label: 'おしい' };
+                return { color: 'rose', tw: 'bg-rose-500', hex: '#f43f5e', label: 'ズレた' };
+            };
+
+            const updateSession = (data) => {
+                const newSessions = [...sessions];
+                newSessions[currentIdx] = { ...newSessions[currentIdx], ...data };
+                setSessions(newSessions);
+                syncToCloud(newSessions);
+            };
+
+            const handleCourseSubmit = (total) => {
+                const base = Math.floor(total / 7);
+                const rem = total % 7;
+                const laps = Array(7).fill(base);
+                for (let i = 0; i < rem; i++) laps[i] += 1;
+                updateSession({ baseTotalSec: total, referenceLaps: laps, lapTargets: laps, step: 'strategy' });
+            };
+
+            const adjustLap = (idx, delta) => {
+                if (currentSession.isLocked || currentSession.isSaved) return;
+                const newTargets = [...currentSession.lapTargets];
+                newTargets[idx] = Math.max(1, newTargets[idx] + delta);
+                updateSession({ lapTargets: newTargets });
+            };
+
+            const handleStart = () => {
+                if (!isRunning && currentSession.isLocked && !currentSession.isSaved) {
+                    setStartTime(performance.now() - (elapsedTime * 1000));
+                    setIsRunning(true);
+                }
+            };
+
+            const handleStop = () => {
+                setIsRunning(false);
+                if (timerRef.current) cancelAnimationFrame(timerRef.current);
+            };
+
+            const recordLapAt = (idx) => {
+                if (!isRunning || currentSession.laps[idx] !== null || currentSession.isSaved) return;
+                const prev = idx === 0 ? 0 : currentSession.laps[idx - 1].accumulatedTime;
+                const duration = elapsedTime - prev;
+                const diff = duration - currentSession.lapTargets[idx];
+                const newLaps = [...currentSession.laps];
+                newLaps[idx] = { lapNumber: idx + 1, lapTime: duration, accumulatedTime: elapsedTime, diff: Math.round(diff) };
+                const newSessions = [...sessions];
+                newSessions[currentIdx] = { ...currentSession, laps: newLaps, totalTime: elapsedTime };
+                setSessions(newSessions);
+                if (newLaps.filter(l => l !== null).length === 7) { handleStop(); syncToCloud(newSessions); }
+            };
+
+            const handleCancelLap = (idx) => {
+                if (currentSession.isSaved) return;
+                const newLaps = [...currentSession.laps];
+                newLaps[idx] = null;
+                updateSession({ laps: newLaps });
+            };
+
+            const confirmSave = () => {
+                handleStop();
+                const newSessions = [...sessions];
+                newSessions[currentIdx].isSaved = true;
+                newSessions[currentIdx].totalTime = elapsedTime;
+                setSessions(newSessions);
+                syncToCloud(newSessions);
+                setShowSaveModal(false);
+            };
+
+            const confirmReset = () => {
+                handleStop();
+                setElapsedTime(0);
+                const newSessions = [...sessions];
+                newSessions[currentIdx] = {
+                    id: currentIdx,
+                    studentInfo: currentSession.studentInfo,
+                    baseTotalSec: 354,
+                    referenceLaps: [51, 51, 51, 51, 50, 50, 50],
+                    lapTargets: [51, 51, 51, 51, 50, 50, 50],
+                    laps: Array(7).fill(null),
+                    totalTime: 0,
+                    isSaved: false,
+                    isLocked: false,
+                    step: 'info'
+                };
+                setSessions(newSessions);
+                syncToCloud(newSessions);
+                setShowResetModal(false);
+            };
+
+            useEffect(() => {
+                if (isRunning) {
+                    const update = () => {
+                        setElapsedTime(Math.floor((performance.now() - startTime) / 1000));
+                        timerRef.current = requestAnimationFrame(update);
+                    };
+                    timerRef.current = requestAnimationFrame(update);
+                }
+                return () => cancelAnimationFrame(timerRef.current);
+            }, [isRunning, startTime]);
+
+            useEffect(() => {
+                setIsRunning(false);
+                setElapsedTime(currentSession.isSaved ? currentSession.totalTime : (currentSession.laps.some(l => l !== null) ? currentSession.totalTime : 0));
+            }, [currentIdx]);
+
+            const isAllLapsFinished = currentSession.laps.filter(l => l !== null).length === 7;
+            const lastRecordedIdx = currentSession.laps.map((l, i) => l !== null ? i : -1).reduce((max, curr) => Math.max(max, curr), -1);
+            const nextLapToRecordIdx = currentSession.laps.findIndex(l => l === null);
+
+            // --- 折れ線グラフ描画 ---
+            const renderMiniChart = (session) => {
+                const width = 600, height = 260;
+                const padL = 60, padR = 40, padT = 30, padB = 60;
+                const cumTargets = Array.from({length: 7}).map((_, i) => session.lapTargets.slice(0, i+1).reduce((a,b)=>a+b, 0));
+                const validLaps = session.laps.filter(l => l !== null);
+                const lastAct = validLaps.length ? validLaps[validLaps.length-1].accumulatedTime : 0;
+                const maxT = Math.max(cumTargets[6] || 354, lastAct, 60) + 15;
+                const getX = (i) => padL + (i * (width - padL - padR) / 7);
+                const getY = (t) => height - padB - (t * (height - padT - padB) / maxT);
+                return (
+                    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full bg-white rounded-2xl overflow-visible">
+                        {[0, 60, 120, 180, 240, 300].filter(t => t <= maxT).map(t => (
+                            <g key={t}><line x1={padL} y1={getY(t)} x2={width-padR} y2={getY(t)} stroke="#f1f5f9" /><text x={padL-10} y={getY(t)+4} textAnchor="end" fontSize="10" className="fill-slate-300 font-mono">{Math.floor(t/60)}:00</text></g>
+                        ))}
+                        {[0,1,2,3,4,5,6,7].map(i => (
+                            <g key={i}><line x1={getX(i)} y1={padT} x2={getX(i)} y2={height-padB} stroke="#f1f5f9" /><text x={getX(i)} y={height-15} textAnchor="middle" fontSize="10" className="fill-slate-400 italic font-black">{i===0?"スタート":i}</text></g>
+                        ))}
+                        <polyline points={`${getX(0)},${getY(0)} ` + cumTargets.map((t,i)=>`${getX(i+1)},${getY(t)}`).join(' ')} fill="none" stroke="#cbd5e1" strokeWidth="2" strokeDasharray="6,4" />
+                        {validLaps.length > 0 && (
+                            <g>
+                                <polyline points={`${getX(0)},${getY(0)} ` + session.laps.map((l,i)=> l ? `${getX(i+1)},${getY(l.accumulatedTime)}` : '').join(' ')} fill="none" stroke="#2563eb" strokeWidth="6" strokeLinejoin="round" strokeLinecap="round" />
+                                {session.laps.map((l, i) => l && (
+                                    <g key={i}>
+                                        <circle cx={getX(i+1)} cy={getY(l.accumulatedTime)} r="6" fill="#2563eb" stroke="white" strokeWidth="2" />
+                                        <text x={getX(i+1)} y={getY(l.accumulatedTime) + 24} textAnchor="middle" fontSize="13" className="font-mono font-black fill-blue-800" style={{ paintOrder: 'stroke', stroke: 'white', strokeWidth: '3px' }}>{formatTime(l.accumulatedTime)}</text>
+                                    </g>
+                                ))}
+                            </g>
+                        )}
+                    </svg>
+                );
+            };
+
+            if (!hasLoaded) return <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white"><div className="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div><p className="font-black italic tracking-widest animate-pulse uppercase text-sm">きろくを よみこんでいます...</p></div>;
+
+            return (
+                <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900 select-none pb-20 tracking-tight">
+                    <header className="bg-slate-900 text-white shadow-lg sticky top-0 z-50 border-b-2 border-indigo-600 p-2">
+                        <div className="flex items-center justify-between max-w-7xl mx-auto w-full px-4 text-white">
+                            <button onClick={() => setCurrentIdx(prev => Math.max(0, prev - 1))} className="p-2 bg-slate-800 rounded-xl active:scale-90"><Icons.Left size={24} /></button>
+                            <h1 className="text-xl font-black italic">計測スロット #{currentIdx + 1} {currentSession.isSaved && <span className="text-[9px] bg-indigo-600 px-2 rounded-full ml-2">保存済み</span>}</h1>
+                            <button onClick={() => setCurrentIdx(prev => Math.min(14, prev + 1))} className="p-2 bg-slate-800 rounded-xl active:scale-90"><Icons.Right size={24} /></button>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 max-w-6xl mx-auto w-full p-2 lg:p-4 space-y-3">
+                        {/* 1. 走る人のじょうほう */}
+                        <section className={`bg-white p-3 rounded-2xl shadow-sm border border-slate-200 ${currentSession.isSaved ? 'opacity-40 pointer-events-none' : ''}`}>
+                            <div className="flex items-center gap-3 bg-slate-50 p-2 rounded-xl border border-slate-100 shadow-inner">
+                                <div className="flex-1 flex gap-2 items-end">
+                                    {['grade', 'class', 'number'].map(k => (
+                                        <div key={k} className="flex-1 text-slate-800">
+                                            <label className="text-[8px] font-black text-slate-400 uppercase ml-1">{k === 'grade' ? '年' : k === 'class' ? '組' : '番'}</label>
+                                            <select value={currentSession.studentInfo[k]} onChange={(e) => updateSession({ studentInfo: {...currentSession.studentInfo, [k]: e.target.value} })} className="w-full p-2 bg-white border border-black rounded-lg font-black text-lg appearance-none">
+                                                {Array.from({length: k === 'number' ? 40 : 10}, (_,i) => i+1).map(v => <option key={v} value={String(v)}>{v}{k === 'grade' ? '年' : k === 'class' ? '組' : '番'}</option>)}
+                                            </select>
+                                        </div>
+                                    ))}
+                                    <div className="flex-[2.5] text-slate-800">
+                                        <label className="text-[8px] font-black text-slate-400 uppercase ml-1">なまえ</label>
+                                        <input type="text" placeholder="名前をかいてね" value={currentSession.studentInfo.name} onChange={(e) => updateSession({ studentInfo: {...currentSession.studentInfo, name: e.target.value} })} className="w-full p-2 bg-white border border-black rounded-lg font-black text-lg focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm" />
+                                    </div>
+                                </div>
+                                {currentSession.step === 'info' && <button onClick={() => updateSession({ step: 'course' })} className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-black text-sm active:scale-95 shadow-lg">決定</button>}
+                            </div>
+                        </section>
+
+                        {/* 2. 目ひょうタイム */}
+                        {(currentSession.step === 'course' || currentSession.step === 'strategy' || currentSession.step === 'measure') && (
+                            <section className={`bg-white p-3 rounded-2xl shadow-sm border border-slate-200 ${currentSession.step === 'info' || currentSession.isSaved ? 'hidden' : 'animate-in fade-in'}`}>
+                                <div className="flex items-center gap-4 bg-blue-50 p-2 rounded-xl border border-blue-100">
+                                    <div className="flex items-center gap-2 px-2 text-blue-800"><Icons.Target size={16} /><span className="text-[10px] font-black uppercase">目ひょう</span></div>
+                                    <div className="flex items-center gap-2 bg-white p-1 px-3 rounded-lg border border-blue-200 shadow-sm text-slate-800">
+                                        <input type="number" value={inputMins} onChange={e => setInputMins(Number(e.target.value))} className="w-12 text-2xl font-mono font-black text-center outline-none" />
+                                        <span className="font-black">分</span>
+                                        <input type="number" min="0" max="59" value={inputSecs} onChange={e => setInputSecs(Math.min(59, Math.max(0, Number(e.target.value))))} className="w-12 text-2xl font-mono font-black text-center outline-none" />
+                                        <span className="font-black">秒</span>
+                                    </div>
+                                    {currentSession.step === 'course' && <button onClick={() => handleCourseSubmit((inputMins * 60) + inputSecs)} className="flex-1 py-3 bg-blue-600 text-white rounded-lg font-black text-lg shadow-md active:scale-95">タイムをきめる</button>}
+                                    {currentSession.step !== 'course' && <div className="flex-1 text-right pr-4 text-slate-800 font-black"><span className="text-2xl font-mono underline decoration-blue-200 decoration-4">{formatTime(currentSession.baseTotalSec)}</span></div>}
+                                </div>
+                            </section>
+                        )}
+
+                        {/* 3. ラップごとの作せん */}
+                        {(currentSession.step === 'strategy' || currentSession.step === 'measure') && (
+                            <section className={`bg-white p-3 rounded-[1.5rem] shadow-sm border border-slate-200 space-y-3 ${(currentSession.isLocked || currentSession.isSaved) ? 'opacity-40 pointer-events-none' : 'animate-in slide-in-from-bottom'}`}>
+                                <div className="flex justify-between items-center px-1">
+                                    <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2"><Icons.Settings size={14}/> 1周ごとの作せん</h2>
+                                    <div className={`px-4 py-1.5 rounded-full font-black text-lg border-2 shadow-sm ${calculateTotalDiff() >= 0 ? 'border-emerald-500 text-emerald-600 bg-emerald-50' : 'border-rose-500 text-rose-600 bg-rose-50'}`}>ズレの合計: {calculateTotalDiff() > 0 ? `+${calculateTotalDiff()}` : calculateTotalDiff()}秒</div>
+                                </div>
+                                <div className="overflow-x-auto pb-1 no-scrollbar text-slate-800">
+                                    <div className="grid grid-cols-7 gap-1 min-w-[600px] text-center">
+                                        {currentSession.lapTargets.map((t, i) => {
+                                            const diff = currentSession.referenceLaps[i] - t;
+                                            return (
+                                                <div key={i} className="flex flex-col gap-1">
+                                                    <div className={`py-1 rounded-t-lg border-x border-t ${diff > 0 ? 'bg-emerald-50 border-emerald-200' : diff < 0 ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-100'}`}><span className="text-xs font-mono font-black">{diff > 0 ? `${diff}秒はやい` : diff < 0 ? `${Math.abs(diff)}秒おそい` : 'ふつう'}</span></div>
+                                                    <div className="bg-slate-900 p-2 rounded-b-lg flex flex-col items-center gap-1 text-white shadow-sm">
+                                                        <span className="text-[7px] font-black text-indigo-400 uppercase">{i+1}周目</span>
+                                                        <span className="text-lg font-mono font-black leading-none">{t}秒</span>
+                                                        <div className="flex flex-col gap-1 w-full mt-1 text-slate-800">
+                                                            <button onClick={() => adjustLap(i, 1)} className="w-full h-8 bg-indigo-600 text-white rounded font-black text-lg shadow active:scale-90">+</button>
+                                                            <button onClick={() => adjustLap(i, -1)} className="w-full h-8 bg-slate-700 text-slate-400 rounded font-black text-lg active:scale-90">-</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                {currentSession.step === 'strategy' && <button onClick={() => updateSession({ isLocked: true, step: 'measure' })} className="w-full py-4 bg-emerald-500 text-white rounded-xl font-black text-2xl shadow-xl active:scale-95 border-b-[8px] border-emerald-700">これでいい！計測スタート</button>}
+                            </section>
+                        )}
+
+                        {/* 4. 計測画面 (iPad横並び) */}
+                        {(currentSession.step === 'measure' || currentSession.isSaved) && (
+                            <div className={`measure-container ${currentSession.isSaved ? 'opacity-90' : ''}`}>
+                                <div className="sticky top-20 z-10 mb-4 lg:mb-0">
+                                    <div className="bg-slate-900 rounded-[2rem] p-6 shadow-xl border-b-8 border-slate-800 text-center text-white">
+                                        <div className="text-[6.5rem] md:text-[7.5rem] font-mono font-black tabular-nums leading-none mb-4">{formatTime(elapsedTime)}</div>
+                                        <div className="flex flex-col gap-3">
+                                            {!isRunning && !currentSession.isSaved ? <button onClick={handleStart} className="w-full py-4 bg-emerald-500 text-white rounded-xl font-black text-3xl shadow-xl active:scale-95 border-b-4 border-emerald-700 uppercase">スタート！</button>
+                                            : !currentSession.isSaved ? <button onClick={handleStop} className="w-full py-4 bg-rose-500 text-white rounded-xl font-black text-2xl active:scale-95 border-b-4 border-rose-800 uppercase">ストップ</button>
+                                            : <div className="bg-indigo-600 text-white py-4 rounded-xl font-black text-2xl italic border-b-4 border-indigo-900 uppercase tracking-tighter">きまりました</div>}
+                                        </div>
+                                        
+                                        <div className="mt-6 flex justify-center">
+                                            <div className="bg-slate-800 w-full p-4 rounded-xl border border-slate-700 flex items-center justify-center gap-6 text-white shadow-inner">
+                                                <p className="text-sm font-black text-indigo-400 uppercase tracking-widest leading-none">目ひょう</p>
+                                                <p className="text-4xl font-mono font-black border-l border-slate-600 pl-6">{formatTime(currentSession.baseTotalSec)}</p>
+                                            </div>
+                                        </div>
+                                        
+                                        {!currentSession.isSaved && (
+                                            <button onClick={() => setShowResetModal(true)} className="mt-4 w-full py-3 bg-slate-700 text-slate-400 rounded-lg flex items-center justify-center gap-2 shadow hover:text-white transition-all"><Icons.Reset size={18} /> やりなおす</button>
+                                        )}
+                                    </div>
+                                </div>
+                                <div className="bg-white rounded-3xl shadow-lg border-2 border-slate-200 overflow-hidden text-slate-800">
+                                    <div className="bg-slate-900 p-4 flex justify-between items-center px-8 border-b-2 border-indigo-900 text-white">
+                                        <h3 className="font-black text-xs italic flex items-center gap-2 text-white"><Icons.List size={16} /> 今の走り</h3>
+                                        <span className="text-lg font-black italic">{currentSession.laps.filter(l=>l!==null).length} / 7</span>
+                                    </div>
+                                    <table className="w-full font-bold text-center">
+                                        <thead className="bg-slate-50 text-slate-400 text-[8px] border-b uppercase">
+                                            <tr><th className="p-3">周</th><th className="p-3 text-slate-800">作せん</th><th className="p-3 text-indigo-600">きろく</th><th className="p-3 text-slate-800">ズレ</th></tr>
+                                        </thead>
+                                        <tbody className="divide-y font-mono">
+                                            {currentSession.lapTargets.map((targetVal, i) => {
+                                                const lap = currentSession.laps[i];
+                                                const evalInfo = getEvaluation(lap ? lap.diff : null);
+                                                const lastIdx = currentSession.laps.map((l,idx) => l !== null ? idx : -1).reduce((m,c)=>Math.max(m,c),-1);
+                                                const isLast = i === lastIdx;
+                                                const isNext = i === currentSession.laps.findIndex(l => l === null);
+                                                return (
+                                                    <tr key={i} className={isNext && isRunning ? 'bg-indigo-50/40 animate-pulse' : ''}>
+                                                        <td className="p-4 text-3xl text-slate-200 italic">{i+1}</td>
+                                                        <td className="p-4 font-mono text-slate-400 text-xl">{targetVal}秒</td>
+                                                        <td className="p-4 relative">
+                                                            {lap ? <div className="flex items-center justify-center gap-3 text-slate-800"><span className="text-5xl font-mono font-black">{Math.round(lap.lapTime)}<small className="text-sm opacity-40 ml-0.5">秒</small></span>{!currentSession.isSaved && isLast && <button onClick={() => handleCancelLap(i)} className="bg-rose-500 text-white p-1 rounded-full shadow hover:bg-rose-600 transition-all text-white flex items-center justify-center"><Icons.X size={18} strokeWidth={4}/></button>}</div>
+                                                            : isNext ? <button onClick={() => recordLapAt(i)} disabled={!isRunning} className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-black text-3xl shadow active:scale-90 border-b-4 border-indigo-900 italic tracking-widest uppercase">計測ボタン</button>
+                                                            : <span className="text-slate-100 font-black text-lg italic uppercase">まってね</span>}
+                                                        </td>
+                                                        <td className="p-4 text-slate-800">{lap && <span className={`inline-block min-w-[100px] py-2.5 rounded-2xl text-white font-black text-3xl shadow-md ${evalInfo.tw}`}>{lap.diff > 0 ? `${lap.diff}秒おそい` : lap.diff === 0 ? 'ぴったり' : `${Math.abs(lap.diff)}秒はやい`}</span>}</td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                    {!currentSession.isSaved && isAllLapsFinished && (
+                                        <div className="p-8 bg-slate-50 border-t-4 border-slate-100 text-center animate-in zoom-in">
+                                            <button onClick={() => setShowSaveModal(true)} className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black text-3xl shadow-2xl active:scale-95 border-b-[12px] border-indigo-950">きろくを保存して終わる</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 5. 今までのきろく */}
+                        <section className="pt-10 border-t-8 border-slate-200 space-y-5 text-slate-800">
+                            <h2 className="text-3xl font-black italic text-slate-300 px-2 flex items-center gap-3"><Icons.History size={24}/> 今までのきろく</h2>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 px-1 text-white">
+                                {sessions.map((s, idx) => s.isSaved && (
+                                    <div key={idx} className="bg-white rounded-[2.5rem] shadow-lg border border-slate-200 overflow-hidden flex flex-col transform transition-all hover:scale-[1.01]">
+                                        <div className="p-5 bg-slate-900 flex justify-between items-center text-left">
+                                            <div><span className="text-[8px] bg-indigo-600 px-2 py-0.5 rounded-full font-black mb-1 inline-block text-white tracking-widest font-mono">#{idx + 1}</span><h4 className="text-xl font-black text-white">{String(s.studentInfo.grade)}年{String(s.studentInfo.class)}組 {String(s.studentInfo.number)}番</h4><p className="text-base opacity-60 font-bold italic text-indigo-100">{String(s.studentInfo.name) || 'なまえなし'}</p></div>
+                                            <div className="text-right text-white"><p className="text-[8px] font-black opacity-40 uppercase tracking-widest mb-1 text-center">さいごのタイム</p><p className="text-4xl font-mono font-black text-indigo-400 leading-none">{formatTime(s.totalTime)}</p></div>
+                                        </div>
+                                        <div className="p-4 bg-slate-50 border-t border-slate-100 space-y-3 text-slate-800">
+                                            <div className="flex justify-between items-center px-1 text-slate-400 font-black"><span className="text-[9px] uppercase tracking-widest flex items-center gap-1"><Icons.Trend size={12}/> ふりかえりグラフ</span><div className="flex gap-4 text-[8px]"><span>--- 作せん</span><span className="text-indigo-600 font-black">——— きろく</span></div></div>
+                                            <div className="h-56 bg-white rounded-2xl border border-slate-100 shadow-inner flex items-center justify-center">
+                                                {renderMiniChart(s)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {sessions.filter(s => s.isSaved).length === 0 && (
+                                    <div className="col-span-full py-16 text-center text-slate-300 border-4 border-dashed border-slate-200 rounded-[2rem] text-xl font-black italic uppercase tracking-widest opacity-50">まだ きろくが ありません</div>
+                                )}
+                            </div>
+                        </section>
+                    </main>
+
+                    {/* モーダル */}
+                    {showSaveModal && (
+                        <div className="fixed inset-0 bg-indigo-950/90 backdrop-blur-md z-[1000] flex items-center justify-center p-6 animate-in fade-in duration-200">
+                            <div className="bg-white rounded-[3rem] p-10 max-w-xl w-full shadow-2xl text-center space-y-8 animate-in zoom-in">
+                                <div className="w-20 h-20 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto text-indigo-600"><Icons.Save size={40}/></div>
+                                <h2 className="text-3xl font-black text-slate-800 tracking-tighter italic">きろくを ほぞんしますか？</h2>
+                                <div className="bg-slate-50 p-6 rounded-2xl text-left space-y-2 text-slate-800 shadow-inner border border-slate-100">
+                                    <p className="flex justify-between font-bold"><span>走る人:</span> <span className="text-slate-900 font-black">{currentSession.studentInfo.grade}年{currentSession.studentInfo.class}組 {currentSession.studentInfo.number}番</span></p>
+                                    <p className="flex justify-between font-bold"><span>タイム:</span> <span className="text-indigo-600 font-mono font-black text-3xl">{formatTime(currentSession.totalTime)}</span></p>
+                                </div>
+                                <p className="text-rose-500 font-black text-sm uppercase tracking-widest animate-pulse italic">保存すると あとから なおせません</p>
+                                <div className="grid grid-cols-2 gap-4"><button onClick={() => setShowSaveModal(false)} className="py-5 bg-slate-100 text-slate-400 rounded-2xl font-black text-xl">やめる</button><button onClick={confirmSave} className="py-5 bg-indigo-600 text-white rounded-2xl font-black text-2xl shadow-xl active:scale-95 text-white transition-all">ほぞんする！</button></div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showResetModal && (
+                        <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[1000] flex items-center justify-center p-6 animate-in fade-in">
+                            <div className="bg-white rounded-[3rem] p-10 max-w-xl w-full shadow-2xl text-center space-y-8 animate-in zoom-in text-slate-800">
+                                <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto text-rose-600"><Icons.Reset size={40}/></div>
+                                <h2 className="text-3xl font-black uppercase leading-tight tracking-tighter text-slate-800">はじめから やりなおす？</h2>
+                                <p className="text-slate-500 font-bold text-lg">今のタイムをけしてしまいます。いいですか？</p>
+                                <div className="grid grid-cols-2 gap-4 text-slate-800"><button onClick={() => setShowResetModal(false)} className="py-5 bg-slate-100 text-slate-400 rounded-2xl font-black text-xl text-slate-400">やめる</button><button onClick={confirmReset} className="py-5 bg-rose-600 text-white rounded-2xl font-black text-xl uppercase shadow-xl transition-all text-white">リセットする</button></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
